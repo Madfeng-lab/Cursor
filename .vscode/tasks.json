@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "maven: compile",
+            "type": "shell",
+            "command": "mvn",
+            "args": [
+                "clean",
+                "compile",
+                "-DskipTests"
+            ],
+            "cwd": "${workspaceFolder}/backend",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "isBackground": false,
+            "presentation": {
+                "reveal": "always"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "maven: package",
+            "type": "shell",
+            "command": "mvn",
+            "args": [
+                "clean",
+                "package",
+                "-DskipTests"
+            ],
+            "cwd": "${workspaceFolder}/backend",
+            "group": {
+                "kind": "build"
+            }
+        }
+    ]
+}

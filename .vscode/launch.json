@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "FitnessBackendApplication",
+            "request": "launch",
+            "mainClass": "com.newgym.fitness.FitnessBackendApplication",
+            "projectName": ""
+        },
+        {
+            "type": "java",
+            "name": "FitnessBackendApplication",
+            "request": "launch",
+            "mainClass": "com.newgym.fitness.FitnessBackendApplication",
+            "projectName": "fitness-backend",
+            "cwd": "${workspaceFolder}/backend",
+            "preLaunchTask": "maven: compile"
+        }
+    ]
+}
