@@ -1,0 +1,20 @@
+# Ignore build artifacts
+/backend/target/
+
+# Logs
+backend/*.log
+
+# Flutter build artifacts
+/frontend/.dart_tool/
+/frontend/build/
+/frontend/.flutter-plugins
+/frontend/.flutter-plugins-dependencies
+
+# IDE/editor
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
