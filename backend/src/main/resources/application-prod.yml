@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/fitness_app?useSSL=false&serverTimezone=UTC
+    username: root
+    password: fcl950801
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080
+
+jwt:
+  secret: "change-me-to-a-secure-secret-change-me-123456"
+  expiration-seconds: 604800
