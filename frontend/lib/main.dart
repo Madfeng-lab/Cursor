@@ -32,6 +32,7 @@ class FitnessApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final apiClient = ApiClient(
       // Web/Windows use localhost; Android emulator would use 10.0.2.2.
+      // 部署到服务器时可改回 Uri.base.origin
       baseUrl: 'http://localhost:8080',
     );
 

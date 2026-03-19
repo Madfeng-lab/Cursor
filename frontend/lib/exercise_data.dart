@@ -190,8 +190,8 @@ String _joinInstructions(List<dynamic>? instructions) {
 
 String _buildImageAssetPath(List<dynamic>? images) {
   if (images == null || images.isEmpty) {
-    return 'assets/images/custom_placeholder.png';
+    return '';
   }
   final first = images.first.toString(); // 形如 "Air_Bike/0.jpg"
-  return '/images/exercises/$first';
+  return 'assets/images/exercises/$first';
 }

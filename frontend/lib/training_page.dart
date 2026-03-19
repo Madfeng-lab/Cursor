@@ -246,7 +246,7 @@ class _TrainingPageState extends State<TrainingPage> {
                       muscleGroup: result['primaryMuscle'] as String,
                       difficulty: '入门',
                       details: (result['description'] as String?) ?? '',
-                      imageAssetPath: 'assets/images/custom_placeholder.png',
+                      imageAssetPath: '',
                     ),
                   );
                   // 如果新建的动作属于当前选中部位，则刷新过滤
