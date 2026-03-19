@@ -1,0 +1,23 @@
+{
+  "name": "newgymapp",
+  "version": "1.0.0",
+  "description": "我告诉chatgpt 我的需求，我想要做一个关于健身和饮食的app，告诉了他我的一些想法：",
+  "main": "index.js",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Madfeng-lab/Cursor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Madfeng-lab/Cursor/issues"
+  },
+  "homepage": "https://github.com/Madfeng-lab/Cursor#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0"
+  }
+}
