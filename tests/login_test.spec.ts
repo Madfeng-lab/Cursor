@@ -6,7 +6,6 @@ test('Flutter 健身应用登录流测试', async ({ page }) => {
 
   // 2. 等待 Flutter 加载（通常寻找特定的渲染容器）
 await page.waitForSelector('flt-glass-pane', { state: 'attached' });
-
   // 3. 关键：激活 Flutter 的语义树 (开启辅助功能，让 Playwright 能“看见”文字)
   // 这是处理 Flutter Web 无法直接定位按钮的最稳妥办法
   await page.evaluate(() => {

@@ -9,6 +9,12 @@ import 'training_page.dart';
 import 'diet_page.dart';
 import 'stats_page.dart';
 
+// 构建时可覆盖：`flutter run --dart-define=API_BASE=http://10.0.2.2:8080`
+const String _kApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'http://localhost:8080',
+);
+
 void main() {
   runApp(const FitnessApp());
 }
@@ -30,11 +36,7 @@ class FitnessApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final apiClient = ApiClient(
-      // Web/Windows use localhost; Android emulator would use 10.0.2.2.
-      // 部署到服务器时可改回 Uri.base.origin
-      baseUrl: 'http://localhost:8080',
-    );
+    final apiClient = ApiClient(baseUrl: _kApiBase);
 
     return MultiProvider(
       providers: [

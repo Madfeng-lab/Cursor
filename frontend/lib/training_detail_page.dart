@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'api_client.dart';
+import 'widgets/exercise_animation_player.dart';
 
 /// 本场训练中已完成的动作条目（用于追加展示）
 class SessionExerciseItem {
@@ -23,6 +24,8 @@ class TrainingDetailPage extends StatefulWidget {
     required this.apiClient,
     required this.userId,
     this.exerciseName,
+    this.workoutTitle,
+    this.imageAssetPath,
     this.previousExercises,
     this.onTrainingComplete,
   });
@@ -31,6 +34,10 @@ class TrainingDetailPage extends StatefulWidget {
   final int userId;
   /// 从动作库选中的动作名称，未传则显示默认「杠铃卧推」
   final String? exerciseName;
+  /// 本次训练标题（例如“胸+三头”），用于展示在页面顶部并在退出/恢复时写入会话。
+  final String? workoutTitle;
+  /// 动作图片基准路径（通常以 `.../0.jpg` 结尾），用于在详情页展示两帧动图。
+  final String? imageAssetPath;
   /// 本场训练中已存在的动作（在上面展示，当前动作为本次追加）
   final List<SessionExerciseItem>? previousExercises;
   /// 完成训练并保存成功后调用（由调用方切回首页等）
@@ -45,6 +52,8 @@ const Color _primary = Color(0xFF25F46A);
 
 class _TrainingDetailPageState extends State<TrainingDetailPage> {
   int? _sessionId;
+  DateTime? _sessionStartedAt;
+  late final TextEditingController _titleController;
   bool _starting = false;
   bool _finishing = false;
   String? _error;
@@ -81,17 +90,23 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
   @override
   void initState() {
     super.initState();
+    _titleController = TextEditingController(
+      text: widget.workoutTitle ??
+          widget.exerciseName ??
+          '今日训练',
+    );
     // 复制一份列表用于本页面内部修改（如删除动作）
     _previousExercises = widget.previousExercises != null
         ? List<SessionExerciseItem>.from(widget.previousExercises!)
         : [];
 
-    _startTimer();
     _startSession();
-    _initializeCollapsedStates();
   }
 
   void _initializeCollapsedStates() {
+    _exerciseCollapsed.clear();
+    _exerciseDifficulty.clear();
+
     for (int i = 0; i < _previousExercises.length; i++) {
       final item = _previousExercises[i];
       final allCompleted = item.sets.every((set) => set.completed);
@@ -104,17 +119,34 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
     // 检查当前动作是否所有组都完成
     final currentAllCompleted = _sets.every((set) => set.completed);
     _currentExerciseCollapsed = currentAllCompleted;
+    _currentIndex = 0;
+    for (int i = 0; i < _sets.length; i++) {
+      if (!_sets[i].completed) {
+        _currentIndex = i;
+        break;
+      }
+    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _titleController.dispose();
     super.dispose();
   }
 
   void _startTimer() {
+    _timer?.cancel();
+    if (_sessionStartedAt == null) return;
+
+    // 用 startedAt 计算，确保退出后再次进入能从后端继续计时。
+    _elapsedSeconds = DateTime.now().difference(_sessionStartedAt!).inSeconds;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() => _elapsedSeconds++);
+      if (!mounted) return;
+      final startedAt = _sessionStartedAt;
+      if (startedAt == null) return;
+      final diffSeconds = DateTime.now().difference(startedAt).inSeconds;
+      setState(() => _elapsedSeconds = diffSeconds);
     });
   }
 
@@ -124,18 +156,124 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
       _error = null;
     });
     try {
-      final res = await widget.apiClient.startWorkoutSession(
-        userId: widget.userId,
-        title: widget.exerciseName ?? '杠铃卧推',
-      );
-      setState(() {
+      final unfinished =
+          await widget.apiClient.fetchUnfinishedWorkoutSession(userId: widget.userId);
+      if (unfinished != null) {
+        _sessionId = unfinished.id;
+        _sessionStartedAt = unfinished.startedAt;
+
+        // 恢复会话标题（优先使用会话本身，确保退出/恢复一致）
+        _titleController.text =
+            unfinished.title.isNotEmpty ? unfinished.title : _titleController.text;
+
+        final shouldRestoreExerciseData =
+            widget.previousExercises == null ||
+            (widget.exerciseName != null &&
+                widget.exerciseName == unfinished.title);
+
+        if (shouldRestoreExerciseData && unfinished.exercises.isNotEmpty) {
+          final allExercises = unfinished.exercises;
+          final prevExercises = allExercises.sublist(
+            0,
+            allExercises.length - 1,
+          );
+          final currentExercise = allExercises.last;
+
+          _previousExercises = prevExercises
+              .map((ex) => SessionExerciseItem(
+                    exerciseName: ex.name,
+                    sets: (ex.sets.toList()
+                      ..sort((a, b) => a.setIndex.compareTo(b.setIndex)))
+                        .map((s) => WorkoutSet(
+                              weight: s.weightKg.round(),
+                              reps: s.reps,
+                              completed: s.completed,
+                            ))
+                        .toList(),
+                    difficulty: null,
+                  ))
+              .toList();
+
+          // 当前动作的组
+          _sets = (currentExercise.sets.toList()
+            ..sort((a, b) => a.setIndex.compareTo(b.setIndex)))
+              .map((s) => WorkoutSet(
+                    weight: s.weightKg.round(),
+                    reps: s.reps,
+                    completed: s.completed,
+                  ))
+              .toList();
+
+          // 优先恢复 restSeconds（如未存过则保留页面默认值）
+          int? firstRest;
+          for (final s in currentExercise.sets) {
+            if (s.restSeconds != null) {
+              firstRest = s.restSeconds;
+              break;
+            }
+          }
+          if (firstRest != null) _restSeconds = firstRest;
+        }
+
+        _initializeCollapsedStates();
+        _startTimer();
+      } else {
+        final res = await widget.apiClient.startWorkoutSession(
+          userId: widget.userId,
+          title: _titleController.text.trim().isNotEmpty
+              ? _titleController.text.trim()
+              : '今日训练',
+        );
         _sessionId = res['id'] as int?;
-      });
+        final startedAtRaw = res['startedAt'] as String?;
+        _sessionStartedAt = startedAtRaw != null
+            ? DateTime.parse(startedAtRaw)
+            : DateTime.now();
+        _initializeCollapsedStates();
+        _startTimer();
+      }
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
       setState(() => _starting = false);
     }
+  }
+
+  Future<void> _saveProgressIfNeeded() async {
+    if (_sessionId == null) return;
+
+    final allItems = <SessionExerciseItem>[
+      ..._previousExercises,
+      SessionExerciseItem(
+        exerciseName: widget.exerciseName ?? '杠铃卧推',
+        sets: _sets,
+        difficulty: _currentDifficulty,
+      ),
+    ];
+
+    final exercises = List<Map<String, dynamic>>.generate(allItems.length, (i) {
+      final item = allItems[i];
+      return {
+        'name': item.exerciseName,
+        'primaryMuscleGroup': null,
+        'sets': List.generate(item.sets.length, (j) {
+          final s = item.sets[j];
+          return {
+            'setIndex': j,
+            'weightKg': s.weight.toDouble(),
+            'reps': s.reps,
+            'completed': s.completed,
+            'restSeconds': _restSeconds,
+          };
+        }),
+      };
+    });
+
+    await widget.apiClient.saveWorkoutSessionProgress(
+      sessionId: _sessionId!,
+      title: _titleController.text.trim(),
+      exercises: exercises,
+    );
   }
 
   String _formatTime(int seconds) {
@@ -182,6 +320,7 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
       await widget.apiClient.finishWorkoutSession(
         sessionId: _sessionId!,
         completed: true,
+        title: _titleController.text.trim(),
         totalVolumeKg: totalVolume,
         estimatedCalories: estCalories,
         exercises: List.generate(allItems.length, (i) {
@@ -221,98 +360,142 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bgDark,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildHeader(context),
-              const SizedBox(height: 16),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (_previousExercises.isNotEmpty) ...[
-                        _buildPreviousExercises(),
-                        const SizedBox(height: 16),
+    return WillPopScope(
+      onWillPop: () async {
+        // 点击返回/关闭时：如果不是“完成训练”流程，则保存当前组数据并保持会话未完成。
+        if (_finishing) return true;
+        try {
+          await _saveProgressIfNeeded();
+        } catch (_) {
+          // 保存失败也允许退出，避免阻塞用户操作。
+        }
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: _bgDark,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildWorkoutTitleInput(),
+                const SizedBox(height: 12),
+                _buildHeader(context),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (_previousExercises.isNotEmpty) ...[
+                          _buildPreviousExercises(),
+                          const SizedBox(height: 16),
+                        ],
+                        _buildCurrentExercise(),
+                        const SizedBox(height: 20),
+                        _buildDifficultyFeedback(),
+                        if (_error != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            _error!,
+                            style: const TextStyle(color: Colors.redAccent),
+                          ),
+                        ],
+                        // 底部留白，避免最后一组被遮挡或难以点击
+                        SizedBox(
+                            height:
+                                MediaQuery.of(context).padding.bottom + 80),
                       ],
-                      _buildCurrentExercise(),
-                      const SizedBox(height: 20),
-                      _buildDifficultyFeedback(),
-                      if (_error != null) ...[
-                        const SizedBox(height: 12),
-                        Text(
-                          _error!,
-                          style: const TextStyle(color: Colors.redAccent),
-                        ),
-                      ],
-                      // 底部留白，避免最后一组被遮挡或难以点击
-                      SizedBox(
-                          height: MediaQuery.of(context).padding.bottom + 80),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              // 上一个动作完成后可点此按钮返回动作库选下一个动作
-              Center(
-                child: TextButton.icon(
-                  onPressed: (_starting || _finishing)
-                      ? null
-                      : () {
-                          final name =
-                              widget.exerciseName ?? '杠铃卧推';
-                          final currentCopy = _sets
-                              .map((s) => WorkoutSet(
-                                    weight: s.weight,
-                                    reps: s.reps,
-                                    completed: s.completed,
-                                  ))
-                              .toList();
-                          final sessionSoFar = [
-                            ..._previousExercises,
-                            SessionExerciseItem(
-                              exerciseName: name,
-                              sets: currentCopy,
-                              difficulty: _currentDifficulty,
-                            ),
-                          ];
-                          Navigator.of(context).pop(sessionSoFar);
-                        },
-                  icon: Icon(
-                    Icons.add_circle_outline,
-                    size: 20,
-                    color: (_starting || _finishing)
-                        ? Colors.grey
-                        : _primary,
-                  ),
-                  label: Text(
-                    '新增训练动作',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: (_starting || _finishing)
-                          ? Colors.grey
-                          : _primary,
                     ),
                   ),
-                  style: TextButton.styleFrom(
-                    foregroundColor: _primary,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                ),
+                const SizedBox(height: 12),
+                // 上一个动作完成后可点此按钮返回动作库选下一个动作
+                Center(
+                  child: TextButton.icon(
+                    onPressed: (_starting || _finishing)
+                        ? null
+                        : () {
+                            final name = widget.exerciseName ?? '杠铃卧推';
+                            final currentCopy = _sets
+                                .map((s) => WorkoutSet(
+                                      weight: s.weight,
+                                      reps: s.reps,
+                                      completed: s.completed,
+                                    ))
+                                .toList();
+                            final sessionSoFar = [
+                              ..._previousExercises,
+                              SessionExerciseItem(
+                                exerciseName: name,
+                                sets: currentCopy,
+                                difficulty: _currentDifficulty,
+                              ),
+                            ];
+                            Navigator.of(context).pop(sessionSoFar);
+                          },
+                    icon: Icon(
+                      Icons.add_circle_outline,
+                      size: 20,
+                      color: (_starting || _finishing) ? Colors.grey : _primary,
+                    ),
+                    label: Text(
+                      '新增训练动作',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: (_starting || _finishing) ? Colors.grey : _primary,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: _primary,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              _buildBottomBar(),
-            ],
+                const SizedBox(height: 16),
+                _buildBottomBar(),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildWorkoutTitleInput() {
+    return TextField(
+      controller: _titleController,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+      ),
+      maxLines: 1,
+      decoration: InputDecoration(
+        hintText: '例如：胸+三头',
+        hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
+        filled: true,
+        fillColor: const Color(0xFF0B1220),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _primary.withOpacity(0.35), width: 1),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _primary.withOpacity(0.35), width: 1),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _primary, width: 1.6),
+        ),
+      ),
+      onChanged: (_) {
+        // 保持轻量；保存进度/结束训练时统一写入后端。
+      },
     );
   }
 
@@ -880,28 +1063,12 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
               children: [
                 Container(color: Colors.black),
                 Positioned.fill(
-                  child: Image.network(
-                    'https://images.pexels.com/photos/1552101/pexels-photo-1552101.jpeg',
-                    fit: BoxFit.cover,
+                  child: ExerciseAnimationPlayer(
+                    assetPath: widget.imageAssetPath ?? '',
+                    animationName: '',
                   ),
                 ),
                 Container(color: Colors.black.withOpacity(0.25)),
-                Center(
-                  child: InkWell(
-                    onTap: () {},
-                    borderRadius: BorderRadius.circular(40),
-                    child: Container(
-                      width: 64,
-                      height: 64,
-                      decoration: const BoxDecoration(
-                        color: _primary,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.play_arrow,
-                          size: 36, color: Colors.black),
-                    ),
-                  ),
-                ),
               ],
             ),
           ),

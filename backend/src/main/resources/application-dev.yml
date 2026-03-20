@@ -21,3 +21,9 @@ server:
 jwt:
   secret: "change-me-to-a-secure-secret-change-me-123456"
   expiration-seconds: 604800
+
+ai:
+  ark:
+    api-key: ${FOOD_AI_API_KEY:df868073-2f9e-4f83-a821-48d6cbadb31f}
+    base-url: ${FOOD_AI_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
+    model: ${FOOD_AI_MODEL:ep-20260320115953-9p99f}

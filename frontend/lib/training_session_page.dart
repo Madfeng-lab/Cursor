@@ -93,6 +93,7 @@ class _TrainingSessionPageState extends State<TrainingSessionPage> {
       await widget.apiClient.finishWorkoutSession(
         sessionId: _sessionId!,
         completed: true,
+        title: _titleController.text.trim(),
         totalVolumeKg: volume,
         estimatedCalories: estCalories,
       );

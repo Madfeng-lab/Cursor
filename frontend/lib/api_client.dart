@@ -1,17 +1,37 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
 /// Minimal API client for the backend.
 class ApiClient {
-  ApiClient({required this.baseUrl});
+  ApiClient({
+    required this.baseUrl,
+    this.requestTimeout = const Duration(seconds: 20),
+  });
 
   /// Base URL of the backend, e.g.:
   /// - Android emulator: http://10.0.2.2:8080
   /// - iOS simulator: http://localhost:8080
   final String baseUrl;
 
+  /// 避免后端未启动时请求一直挂起（登录按钮无限转圈）。
+  final Duration requestTimeout;
+
   String? _token;
+
+  Future<http.Response> _timed(Future<http.Response> request) async {
+    try {
+      return await request.timeout(requestTimeout);
+    } on TimeoutException {
+      throw Exception(
+        '连接超时（${requestTimeout.inSeconds} 秒）请确认后端已在 $baseUrl 启动 '
+        '（例如先运行 start-all.bat，并等到控制台出现 Started）',
+      );
+    } on http.ClientException catch (e) {
+      throw Exception('无法连接服务器 $baseUrl：${e.message}');
+    }
+  }
 
   void setToken(String? token) {
     _token = token;
@@ -32,10 +52,12 @@ class ApiClient {
     required String password,
   }) async {
     final uri = Uri.parse('$baseUrl/api/auth/login');
-    final resp = await http.post(
-      uri,
-      headers: _headers(),
-      body: jsonEncode({'email': email, 'password': password}),
+    final resp = await _timed(
+      http.post(
+        uri,
+        headers: _headers(),
+        body: jsonEncode({'email': email, 'password': password}),
+      ),
     );
     if (resp.statusCode == 401) {
       throw Exception('邮箱或密码错误');
@@ -54,13 +76,15 @@ class ApiClient {
     required String password,
   }) async {
     final uri = Uri.parse('$baseUrl/api/auth/register');
-    final resp = await http.post(
-      uri,
-      headers: _headers(),
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-      }),
+    final resp = await _timed(
+      http.post(
+        uri,
+        headers: _headers(),
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+        }),
+      ),
     );
     if (resp.statusCode == 400 || resp.statusCode == 409) {
       throw Exception('注册失败: 邮箱可能已被使用或数据不合法');
@@ -134,11 +158,46 @@ class ApiClient {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
+  Future<WorkoutSessionLite?> fetchUnfinishedWorkoutSession({
+    required int userId,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/workouts/sessions/unfinished')
+        .replace(queryParameters: {'userId': '$userId'});
+    final resp = await http.get(uri, headers: _headers());
+    if (resp.statusCode == 404) return null;
+    if (resp.statusCode != 200) {
+      throw Exception('获取未完成训练失败: ${resp.statusCode}');
+    }
+    return WorkoutSessionLite.fromJson(
+      jsonDecode(resp.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> saveWorkoutSessionProgress({
+    required int sessionId,
+    required String title,
+    required List<Map<String, dynamic>> exercises,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/workouts/sessions/$sessionId/progress');
+    final resp = await http.post(
+      uri,
+      headers: _headers(),
+      body: jsonEncode({
+        'title': title,
+        'exercises': exercises,
+      }),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('保存训练进度失败: ${resp.statusCode}');
+    }
+  }
+
   Future<Map<String, dynamic>> finishWorkoutSession({
     required int sessionId,
     required bool completed,
     required double totalVolumeKg,
     required double estimatedCalories,
+    required String title,
     List<Map<String, dynamic>>? exercises,
   }) async {
     final uri = Uri.parse('$baseUrl/api/workouts/sessions/$sessionId/finish');
@@ -147,6 +206,7 @@ class ApiClient {
       headers: _headers(),
       body: jsonEncode({
         'completed': completed,
+        'title': title,
         'totalVolumeKg': totalVolumeKg,
         'estimatedCalories': estimatedCalories,
         if (exercises != null) 'exercises': exercises,
@@ -192,18 +252,23 @@ class ApiClient {
     double? protein,
     double? carbs,
     double? fat,
+    String? photoMimeType,
+    String? photoBase64,
   }) async {
     final uri = Uri.parse('$baseUrl/api/diet/foods');
+    final body = <String, dynamic>{
+      'name': name,
+      'calories': calories,
+      'protein': protein,
+      'carbs': carbs,
+      'fat': fat,
+    };
+    if (photoMimeType != null) body['photoMimeType'] = photoMimeType;
+    if (photoBase64 != null) body['photoBase64'] = photoBase64;
     final resp = await http.post(
       uri,
       headers: _headers(),
-      body: jsonEncode({
-        'name': name,
-        'calories': calories,
-        'protein': protein,
-        'carbs': carbs,
-        'fat': fat,
-      }),
+      body: jsonEncode(body),
     );
     if (resp.statusCode != 200 && resp.statusCode != 201) {
       throw Exception('创建食物失败: ${resp.statusCode}');
@@ -326,6 +391,80 @@ class ApiClient {
   }
 }
 
+class WorkoutSessionLite {
+  WorkoutSessionLite({
+    required this.id,
+    required this.title,
+    required this.startedAt,
+    this.exercises = const [],
+  });
+
+  final int id;
+  final String title;
+  final DateTime startedAt;
+  final List<WorkoutSessionExerciseLite> exercises;
+
+  static WorkoutSessionLite fromJson(Map<String, dynamic> json) {
+    final exercisesJson = json['exercises'] as List? ?? [];
+    final exercises = exercisesJson
+        .map((e) => WorkoutSessionExerciseLite.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return WorkoutSessionLite(
+      id: (json['id'] as num).toInt(),
+      title: json['title'] as String? ?? '',
+      startedAt: DateTime.parse(json['startedAt'] as String),
+      exercises: exercises,
+    );
+  }
+}
+
+class WorkoutSessionExerciseLite {
+  WorkoutSessionExerciseLite({
+    required this.name,
+    required this.sets,
+  });
+
+  final String name;
+  final List<WorkoutSessionSetLite> sets;
+
+  static WorkoutSessionExerciseLite fromJson(Map<String, dynamic> json) {
+    final setsJson = json['sets'] as List? ?? [];
+    final sets = setsJson
+        .map((s) => WorkoutSessionSetLite.fromJson(s as Map<String, dynamic>))
+        .toList();
+    return WorkoutSessionExerciseLite(
+      name: json['name'] as String? ?? '',
+      sets: sets,
+    );
+  }
+}
+
+class WorkoutSessionSetLite {
+  WorkoutSessionSetLite({
+    required this.setIndex,
+    required this.weightKg,
+    required this.reps,
+    required this.completed,
+    this.restSeconds,
+  });
+
+  final int setIndex;
+  final double weightKg;
+  final int reps;
+  final bool completed;
+  final int? restSeconds;
+
+  static WorkoutSessionSetLite fromJson(Map<String, dynamic> json) {
+    return WorkoutSessionSetLite(
+      setIndex: (json['setIndex'] as num?)?.toInt() ?? 0,
+      weightKg: (json['weightKg'] as num?)?.toDouble() ?? 0.0,
+      reps: (json['reps'] as num?)?.toInt() ?? 0,
+      completed: (json['completed'] as bool?) ?? false,
+      restSeconds: (json['restSeconds'] as num?)?.toInt(),
+    );
+  }
+}
+
 /// 统计概览（与后端 /api/stats/overview 返回结构对应）
 class StatsOverview {
   StatsOverview({
@@ -368,6 +507,8 @@ class DietFood {
     this.protein,
     this.carbs,
     this.fat,
+    this.photoMimeType,
+    this.photoBase64,
   });
   final int id;
   final String name;
@@ -375,6 +516,8 @@ class DietFood {
   final double? protein;
   final double? carbs;
   final double? fat;
+  final String? photoMimeType;
+  final String? photoBase64;
   static DietFood fromJson(Map<String, dynamic> json) {
     return DietFood(
       id: (json['id'] as num).toInt(),
@@ -383,6 +526,8 @@ class DietFood {
       protein: (json['protein'] as num?)?.toDouble(),
       carbs: (json['carbs'] as num?)?.toDouble(),
       fat: (json['fat'] as num?)?.toDouble(),
+      photoMimeType: json['photoMimeType'] as String?,
+      photoBase64: json['photoBase64'] as String?,
     );
   }
 }

@@ -1,8 +1,15 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import 'api_client.dart';
 import 'auth_state.dart';
+import 'food_ai_service.dart';
 import 'stats_page.dart';
 
 // 统一的饮食页主题色
@@ -17,6 +24,24 @@ const double _targetFat = 70;
 
 String _dateStr(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+/// 缩小为 JPEG 缩略图，降低饮食 API payload 体积。
+Uint8List? _mealPhotoThumbnailBytes(
+  Uint8List raw, {
+  int maxWidth = 480,
+  int quality = 78,
+}) {
+  try {
+    final decoded = img.decodeImage(raw);
+    if (decoded == null) return null;
+    final resized = decoded.width <= maxWidth
+        ? decoded
+        : img.copyResize(decoded, width: maxWidth);
+    return Uint8List.fromList(img.encodeJpg(resized, quality: quality));
+  } catch (_) {
+    return null;
+  }
+}
 
 class DietPage extends StatefulWidget {
   const DietPage({super.key});
@@ -34,9 +59,12 @@ class _DietPageState extends State<DietPage> {
 
   ApiClient get _api => context.read<AuthState>().apiClient;
 
+  late final FoodAiService _foodAi;
+
   @override
   void initState() {
     super.initState();
+    _foodAi = FoodAiService(backendBaseUrl: _api.baseUrl);
     _loadMeals();
   }
 
@@ -185,6 +213,182 @@ class _DietPageState extends State<DietPage> {
     }
   }
 
+  /// 选择本次 AI 识餐要记入的餐次。
+  Future<String?> _pickMealTypeForAi() {
+    return showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text('AI 识餐记入哪一餐？', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.wb_sunny_outlined),
+              title: const Text('早餐'),
+              onTap: () => Navigator.pop(ctx, 'breakfast'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.wb_sunny_rounded),
+              title: const Text('午餐'),
+              onTap: () => Navigator.pop(ctx, 'lunch'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.dark_mode_outlined),
+              title: const Text('晚餐'),
+              onTap: () => Navigator.pop(ctx, 'dinner'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.icecream_outlined),
+              title: const Text('加餐'),
+              onTap: () => Navigator.pop(ctx, 'snack'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<XFile?> _pickMealPhotoWithSource() async {
+    final picker = ImagePicker();
+    if (kIsWeb) {
+      return picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    }
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('拍照'),
+              onTap: () => Navigator.pop(ctx, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('从相册选择'),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == 'camera') {
+      return picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+        preferredCameraDevice: CameraDevice.rear,
+      );
+    }
+    if (choice == 'gallery') {
+      return picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    }
+    return null;
+  }
+
+  String _guessMime(XFile file) {
+    final p = '${file.path}${file.name}'.toLowerCase();
+    if (p.contains('.png')) return 'image/png';
+    if (p.contains('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
+  Future<void> _onAiPhotoMeal() async {
+    final mealType = await _pickMealTypeForAi();
+    if (mealType == null || !mounted) return;
+    await _runAiRecognitionForMeal(mealType);
+  }
+
+  Future<void> _runAiRecognitionForMeal(String mealType) async {
+    final xfile = await _pickMealPhotoWithSource();
+    if (xfile == null || !mounted) return;
+
+    Uint8List bytes;
+    try {
+      bytes = await xfile.readAsBytes();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('读取照片失败：$e')),
+      );
+      return;
+    }
+    if (bytes.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('图片为空，请重新选择')),
+      );
+      return;
+    }
+
+    final mime = _guessMime(xfile);
+
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      builder: (ctx) => const _AiAnalyzingDialog(),
+    );
+
+    try {
+      final result = await _foodAi.analyzeFood(
+        imageBytes: bytes,
+        mimeType: mime,
+      );
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+
+      final saved = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => _AiFoodConfirmDialog(
+          imageBytes: bytes,
+          imageMimeType: mime,
+          initial: result,
+          mealType: mealType,
+          api: _api,
+          userId: _userId,
+          dateStr: _dateStr(_selectedDate),
+          existingMeal: _mealFor(mealType),
+        ),
+      );
+      if (saved == true) _loadMeals();
+    } on FoodAiException catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('识别未成功'),
+          content: Text(e.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('关闭'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _runAiRecognitionForMeal(mealType);
+              },
+              style: FilledButton.styleFrom(backgroundColor: kDietPrimary),
+              child: const Text('重新拍照'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('识餐失败：$e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -271,6 +475,8 @@ class _DietPageState extends State<DietPage> {
                             carbs: _totalCarbs,
                             fat: _totalFat,
                           ),
+                          const SizedBox(height: 16),
+                          _AiNewRecordCard(onCameraTap: _onAiPhotoMeal),
                           const SizedBox(height: 24),
                           _MealSection(
                             icon: Icons.wb_sunny_outlined,
@@ -654,10 +860,7 @@ class _MealSection extends StatelessWidget {
             (item) => Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: _FoodItemCard(
-                title: item.food.name,
-                description: '${item.amount.toStringAsFixed(0)}g',
-                calories: '${item.calories} kcal',
-                itemId: item.id,
+                item: item,
                 onEdit: item.id != null
                     ? () => onEditItem?.call(item)
                     : null,
@@ -674,23 +877,44 @@ class _MealSection extends StatelessWidget {
 
 class _FoodItemCard extends StatelessWidget {
   const _FoodItemCard({
-    required this.title,
-    required this.description,
-    required this.calories,
-    this.itemId,
+    required this.item,
     this.onEdit,
     this.onDelete,
   });
 
-  final String title;
-  final String description;
-  final String calories;
-  final int? itemId;
+  final DietMealItem item;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
+    final title = item.food.name;
+    final description = '${item.amount.toStringAsFixed(0)}g';
+    final calories = '${item.calories} kcal';
+    final b64 = item.food.photoBase64;
+
+    Widget thumb;
+    if (b64 != null && b64.isNotEmpty) {
+      try {
+        final bytes = base64Decode(b64);
+        thumb = ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Image.memory(
+            bytes,
+            width: 48,
+            height: 48,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => _foodPlaceholderThumb(),
+          ),
+        );
+      } catch (_) {
+        thumb = _foodPlaceholderThumb();
+      }
+    } else {
+      thumb = _foodPlaceholderThumb();
+    }
+
     return Card(
       elevation: 0,
       margin: EdgeInsets.zero,
@@ -699,19 +923,7 @@ class _FoodItemCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         child: Row(
           children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(
-                Icons.restaurant_outlined,
-                size: 24,
-                color: Colors.grey,
-              ),
-            ),
+            SizedBox(width: 48, height: 48, child: thumb),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -765,6 +977,22 @@ class _FoodItemCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  static Widget _foodPlaceholderThumb() {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(
+        Icons.restaurant_outlined,
+        size: 24,
+        color: Colors.grey,
       ),
     );
   }
@@ -1324,6 +1552,416 @@ class _CreateFoodDialogState extends State<_CreateFoodDialog> {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// AI 分析中的全屏遮罩
+class _AiAnalyzingDialog extends StatelessWidget {
+  const _AiAnalyzingDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Card(
+        margin: const EdgeInsets.symmetric(horizontal: 40),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: kDietPrimary),
+              SizedBox(height: 18),
+              Text(
+                'AI 正在分析食物...',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              SizedBox(height: 8),
+              Text(
+                '请稍候',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 新增记录：圆形相机入口
+class _AiNewRecordCard extends StatelessWidget {
+  const _AiNewRecordCard({required this.onCameraTap});
+
+  final VoidCallback onCameraTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0.5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '新增记录',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    kIsWeb ? '上传照片，AI 估算营养（Web 为相册）' : '拍照或选图，AI 估算营养',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onCameraTap,
+                customBorder: const CircleBorder(),
+                child: Ink(
+                  width: 68,
+                  height: 68,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: kDietPrimary,
+                    boxShadow: [
+                      BoxShadow(
+                        color: kDietPrimary.withOpacity(0.35),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.camera_alt_rounded,
+                    color: Colors.black87,
+                    size: 32,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// AI 结果确认：缩略图 + 可编辑字段 + 保存到后端饮食接口
+class _AiFoodConfirmDialog extends StatefulWidget {
+  const _AiFoodConfirmDialog({
+    required this.imageBytes,
+    required this.imageMimeType,
+    required this.initial,
+    required this.mealType,
+    required this.api,
+    required this.userId,
+    required this.dateStr,
+    required this.existingMeal,
+  });
+
+  final Uint8List imageBytes;
+  final String imageMimeType;
+  final FoodAiResult initial;
+  final String mealType;
+  final ApiClient api;
+  final int userId;
+  final String dateStr;
+  final DietMeal? existingMeal;
+
+  @override
+  State<_AiFoodConfirmDialog> createState() => _AiFoodConfirmDialogState();
+}
+
+class _AiFoodConfirmDialogState extends State<_AiFoodConfirmDialog> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _weightCtrl;
+  late final TextEditingController _calCtrl;
+  late final TextEditingController _pCtrl;
+  late final TextEditingController _cCtrl;
+  late final TextEditingController _fCtrl;
+  bool _saving = false;
+
+  static const Color _kCalOrange = Color(0xFFFF6B35);
+
+  @override
+  void initState() {
+    super.initState();
+    final r = widget.initial;
+    _nameCtrl = TextEditingController(text: r.foodName);
+    _weightCtrl = TextEditingController(
+      text: r.estimatedWeightG <= 0
+          ? '100'
+          : r.estimatedWeightG.toStringAsFixed(0),
+    );
+    _calCtrl = TextEditingController(text: '${r.calories}');
+    _pCtrl = TextEditingController(text: r.protein.toStringAsFixed(1));
+    _cCtrl = TextEditingController(text: r.carbs.toStringAsFixed(1));
+    _fCtrl = TextEditingController(text: r.fat.toStringAsFixed(1));
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _weightCtrl.dispose();
+    _calCtrl.dispose();
+    _pCtrl.dispose();
+    _cCtrl.dispose();
+    _fCtrl.dispose();
+    super.dispose();
+  }
+
+  String get _mealTitle {
+    const map = {
+      'breakfast': '早餐',
+      'lunch': '午餐',
+      'dinner': '晚餐',
+      'snack': '加餐',
+    };
+    return map[widget.mealType] ?? widget.mealType;
+  }
+
+  Future<void> _save() async {
+    final name = _nameCtrl.text.trim();
+    final w = double.tryParse(_weightCtrl.text.trim());
+    final cal = int.tryParse(_calCtrl.text.trim());
+    final p = double.tryParse(_pCtrl.text.trim());
+    final c = double.tryParse(_cCtrl.text.trim());
+    final f = double.tryParse(_fCtrl.text.trim());
+
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请填写食物名称')),
+      );
+      return;
+    }
+    if (w == null || w <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请填写合理的重量（克）')),
+      );
+      return;
+    }
+    if (cal == null || cal < 0 || p == null || c == null || f == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请填写有效的营养数值')),
+      );
+      return;
+    }
+
+    final factor = 100.0 / w;
+    final cal100 = (cal * factor).round().clamp(0, 100000);
+    final p100 = (p * factor).clamp(0.0, 10000.0);
+    final c100 = (c * factor).clamp(0.0, 10000.0);
+    final f100 = (f * factor).clamp(0.0, 10000.0);
+
+    setState(() => _saving = true);
+    try {
+      final thumbBytes =
+          _mealPhotoThumbnailBytes(widget.imageBytes) ?? widget.imageBytes;
+      final photoMime = identical(thumbBytes, widget.imageBytes)
+          ? widget.imageMimeType
+          : 'image/jpeg';
+      final photoB64 = base64Encode(thumbBytes);
+
+      final food = await widget.api.createDietFood(
+        name: name,
+        calories: cal100,
+        protein: p100,
+        carbs: c100,
+        fat: f100,
+        photoMimeType: photoMime,
+        photoBase64: photoB64,
+      );
+      if (widget.existingMeal != null) {
+        await widget.api.addDietMealItems(
+          mealId: widget.existingMeal!.id,
+          items: [
+            {'foodId': food.id, 'amount': w},
+          ],
+        );
+      } else {
+        await widget.api.createDietMeal(
+          userId: widget.userId,
+          date: widget.dateStr,
+          mealType: widget.mealType,
+          items: [
+            {'foodId': food.id, 'amount': w},
+          ],
+        );
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败：$e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    '确认营养估算',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '将加入：$_mealTitle',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.memory(
+                    widget.imageBytes,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '食物名称',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _weightCtrl,
+                decoration: const InputDecoration(
+                  labelText: '估算重量 (g)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _calCtrl,
+                decoration: const InputDecoration(
+                  labelText: '热量 (kcal) · 整份',
+                  labelStyle: TextStyle(color: _kCalOrange, fontWeight: FontWeight.w600),
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                keyboardType: TextInputType.number,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: _kCalOrange,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _pCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '蛋白质 (g)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _cCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '碳水 (g)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _fCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '脂肪 (g)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '说明：保存时会按「每 100g」写入食物库，并用当前克数记入本餐。',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _saving ? null : _save,
+                    style: FilledButton.styleFrom(backgroundColor: kDietPrimary),
+                    child: _saving
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.black87,
+                            ),
+                          )
+                        : const Text('保存'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

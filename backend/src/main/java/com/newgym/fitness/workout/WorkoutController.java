@@ -7,6 +7,8 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -58,6 +60,9 @@ public class WorkoutController {
         WorkoutSession session = sessionRepository.findById(sessionId).orElseThrow();
         session.setEndedAt(LocalDateTime.now());
         session.setCompleted(request.isCompleted());
+        if (request.getTitle() != null && !request.getTitle().isBlank()) {
+            session.setTitle(request.getTitle());
+        }
         session.setTotalVolumeKg(request.getTotalVolumeKg());
         session.setEstimatedCalories(request.getEstimatedCalories());
         if (request.getExercises() != null && !request.getExercises().isEmpty()) {
@@ -101,6 +106,56 @@ public class WorkoutController {
         return sessionRepository.findByUserAndStartedAtBetweenOrderByStartedAtDesc(user, start, end);
     }
 
+    @GetMapping("/sessions/unfinished")
+    public WorkoutSession getLatestUnfinishedSession(@RequestParam Long userId) {
+        User user = userRepository.findById(userId).orElseThrow();
+        return sessionRepository.findTopByUserAndCompletedFalseOrderByStartedAtDesc(user)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No unfinished session"));
+    }
+
+    @PostMapping("/sessions/{sessionId}/progress")
+    public WorkoutSession saveProgress(@PathVariable Long sessionId,
+                                        @RequestBody ProgressSessionRequest request) {
+        WorkoutSession session = sessionRepository.findById(sessionId).orElseThrow();
+        session.setCompleted(false);
+        session.setEndedAt(null);
+
+        if (request.getTitle() != null && !request.getTitle().isBlank()) {
+            session.setTitle(request.getTitle());
+        }
+
+        if (request.getExercises() != null && !request.getExercises().isEmpty()) {
+            // overwrite session exercises (cascade + orphanRemoval)
+            session.getExercises().clear();
+            for (ExerciseDetail e : request.getExercises()) {
+                WorkoutSessionExercise ex = new WorkoutSessionExercise();
+                ex.setSession(session);
+                ex.setName(e.getName());
+                ex.setPrimaryMuscleGroup(e.getPrimaryMuscleGroup());
+
+                List<WorkoutSessionSet> sets = new ArrayList<>();
+                if (e.getSets() != null) {
+                    int idx = 0;
+                    for (SetDetail s : e.getSets()) {
+                        WorkoutSessionSet set = new WorkoutSessionSet();
+                        set.setExercise(ex);
+                        set.setSetIndex(s.getSetIndex() != null ? s.getSetIndex() : idx);
+                        set.setWeightKg(s.getWeightKg());
+                        set.setReps(s.getReps());
+                        set.setCompleted(s.isCompleted());
+                        set.setRestSeconds(s.getRestSeconds());
+                        sets.add(set);
+                        idx++;
+                    }
+                }
+                ex.setSets(sets);
+                session.getExercises().add(ex);
+            }
+        }
+
+        return sessionRepository.save(session);
+    }
+
     @Getter
     @Setter
     public static class CreatePlanRequest {
@@ -119,8 +174,16 @@ public class WorkoutController {
     @Setter
     public static class FinishSessionRequest {
         private boolean completed;
+        private String title;
         private double totalVolumeKg;
         private double estimatedCalories;
+        private List<ExerciseDetail> exercises;
+    }
+
+    @Getter
+    @Setter
+    public static class ProgressSessionRequest {
+        private String title;
         private List<ExerciseDetail> exercises;
     }
 

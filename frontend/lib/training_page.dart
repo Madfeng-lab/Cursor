@@ -134,7 +134,9 @@ class _TrainingPageState extends State<TrainingPage> {
     if (exercises.isEmpty) return;
 
     // 第一个动作作为当前编辑动作
-    final firstExerciseName = exercises.first.title;
+    final firstExercise = exercises.first;
+    final firstExerciseName = firstExercise.title;
+    final firstExerciseImageAssetPath = firstExercise.imageAssetPath;
 
     // 其他动作作为已完成动作
     final otherExercises = exercises.sublist(1).map((e) {
@@ -160,6 +162,7 @@ class _TrainingPageState extends State<TrainingPage> {
               apiClient: apiClient,
               userId: userId,
               exerciseName: firstExerciseName,
+              imageAssetPath: firstExerciseImageAssetPath,
               previousExercises: allPrevious.isEmpty ? null : allPrevious,
               onTrainingComplete: () => mainTabState.setIndex(0),
             ),

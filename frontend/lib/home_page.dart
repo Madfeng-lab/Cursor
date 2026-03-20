@@ -5,6 +5,7 @@ import 'api_client.dart';
 import 'auth_state.dart';
 import 'main.dart';
 import 'training_session_page.dart';
+import 'training_detail_page.dart';
 import 'training_page.dart';
 
 class HomePage extends StatelessWidget {
@@ -41,7 +42,7 @@ class HomePage extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 20),
-              const _TodayWorkoutFocusCard(),
+              _TodayWorkoutFocusCard(apiClient: apiClient, userId: userId),
               const SizedBox(height: 20),
               const _DietAnalysisBriefCard(),
             ],
@@ -294,90 +295,138 @@ class _QuickActionsRow extends StatelessWidget {
 }
 
 class _TodayWorkoutFocusCard extends StatelessWidget {
-  const _TodayWorkoutFocusCard();
+  const _TodayWorkoutFocusCard({
+    required this.apiClient,
+    required this.userId,
+  });
+
+  final ApiClient apiClient;
+  final int userId;
 
   @override
   Widget build(BuildContext context) {
+    final mainTabState = context.read<MainTabState>();
     return SizedBox(
       height: 160,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Container(color: Colors.grey.shade300),
-            Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.topCenter,
-                  colors: [
-                    Colors.black87,
-                    Colors.black45,
-                    Colors.transparent,
-                  ],
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () async {
+              try {
+                final unfinished = await apiClient.fetchUnfinishedWorkoutSession(
+                  userId: userId,
+                );
+                if (unfinished != null) {
+                  // 有未完成训练：直接进入训练详情页并继续计时。
+                  if (!context.mounted) return;
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => TrainingDetailPage(
+                        apiClient: apiClient,
+                        userId: userId,
+                        exerciseName: unfinished.title,
+                        imageAssetPath: null,
+                        previousExercises: null,
+                        onTrainingComplete: () => mainTabState.setIndex(0),
+                      ),
+                    ),
+                  );
+                } else {
+                  // 没有未完成训练：进入动作库。
+                  if (!context.mounted) return;
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const TrainingPage(),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('跳转失败: $e')),
+                );
+              }
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Container(color: Colors.grey.shade300),
+                Container(
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [
+                        Colors.black87,
+                        Colors.black45,
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(999),
-                          color: const Color(0xFF25F46A),
-                        ),
-                        child: const Text(
-                          '进行中',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(999),
+                              color: const Color(0xFF25F46A),
+                            ),
+                            child: const Text(
+                              '进行中',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '胸部与三头肌强化',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '12 个动作 | 预计 60 分钟',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '胸部与三头肌强化',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    '12 个动作 | 预计 60 分钟',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Positioned(
-              right: 16,
-              bottom: 16,
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(999),
                 ),
-                child: const Icon(Icons.play_arrow, color: Colors.white),
-              ),
+                Positioned(
+                  right: 16,
+                  bottom: 16,
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Icon(Icons.play_arrow, color: Colors.white),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

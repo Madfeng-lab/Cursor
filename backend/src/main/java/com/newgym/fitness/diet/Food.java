@@ -24,5 +24,13 @@ public class Food {
     private Double protein;
     private Double carbs;
     private Double fat;
+
+    /** 用户拍摄的食物缩略图（Base64），可选；由 AI 识餐等流程写入 */
+    @Column(length = 64)
+    private String photoMimeType;
+
+    @Lob
+    @Column(columnDefinition = "LONGTEXT")
+    private String photoBase64;
 }
 

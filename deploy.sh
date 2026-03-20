@@ -90,6 +90,8 @@ server {
 
     server_name _;
 
+    client_max_body_size 25m;
+
     location / {
         proxy_pass http://localhost:8080;
         proxy_set_header Host \$host;
@@ -118,7 +120,11 @@ cd $APP_DIR
 
 echo "🚀 启动后端服务..."
 
-nohup java -jar app.jar > $LOG_DIR/app.log 2>&1 &
+nohup \
+  FOOD_AI_API_KEY="${FOOD_AI_API_KEY}" \
+  FOOD_AI_MODEL="${FOOD_AI_MODEL}" \
+  FOOD_AI_BASE_URL="${FOOD_AI_BASE_URL}" \
+  java -jar app.jar > $LOG_DIR/app.log 2>&1 &
 EOF
 
 chmod +x $APP_DIR/start.sh

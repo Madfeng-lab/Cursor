@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>用于拍摄餐食照片，进行 AI 营养识别</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于选择餐食照片进行 AI 识别</string>
 </dict>
 </plist>

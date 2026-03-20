@@ -30,6 +30,8 @@ public class DietController {
         food.setProtein(request.getProtein());
         food.setCarbs(request.getCarbs());
         food.setFat(request.getFat());
+        food.setPhotoMimeType(request.getPhotoMimeType());
+        food.setPhotoBase64(request.getPhotoBase64());
         return foodRepository.save(food);
     }
 
@@ -46,6 +48,12 @@ public class DietController {
         food.setProtein(request.getProtein());
         food.setCarbs(request.getCarbs());
         food.setFat(request.getFat());
+        if (request.getPhotoMimeType() != null) {
+            food.setPhotoMimeType(request.getPhotoMimeType());
+        }
+        if (request.getPhotoBase64() != null) {
+            food.setPhotoBase64(request.getPhotoBase64());
+        }
         return foodRepository.save(food);
     }
 
@@ -131,6 +139,9 @@ public class DietController {
         private Double protein;
         private Double carbs;
         private Double fat;
+        /** 可选；前端宜传 JPEG 缩略图 Base64，避免单条过大 */
+        private String photoMimeType;
+        private String photoBase64;
     }
 
     @Getter
