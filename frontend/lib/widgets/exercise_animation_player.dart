@@ -140,39 +140,42 @@ class _ExerciseAnimationPlayerState extends State<ExerciseAnimationPlayer> {
       );
     }
 
-    // Web 场景：为了配合你“把图片拷到 build/web 下再静态访问”的部署方式，
-    // 直接走静态文件 URL，避免 `Image.asset` 依赖 asset manifest 导致找不到。
+    final webStaticUrls = _toWebStaticUrls(path);
+    final remoteFallbackUrl = _toRemoteExerciseUrl(path);
+
+    // Web 场景：优先尝试静态 URL（兼容 /assets/images 与 /assets/assets/images 两种部署），
+    // 失败后再回退到远端图源。
     if (kIsWeb) {
-      final webStaticUrl = _toWebStaticUrl(path);
-      if (webStaticUrl != null) {
-        return Image.network(
-          webStaticUrl,
+      if (webStaticUrls.isNotEmpty) {
+        return _buildNetworkWithFallback(
+          urls: webStaticUrls,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildFallback(),
+          finalFallback: remoteFallbackUrl == null
+              ? _buildFallback()
+              : Image.network(
+                  remoteFallbackUrl,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _buildFallback(),
+                ),
         );
       }
     }
 
-    final webStaticUrl = _toWebStaticUrl(path);
-    final remoteFallbackUrl = _toRemoteExerciseUrl(path);
     return Image.asset(
       path,
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) {
-        if (webStaticUrl != null) {
-          return Image.network(
-            webStaticUrl,
+        if (webStaticUrls.isNotEmpty) {
+          return _buildNetworkWithFallback(
+            urls: webStaticUrls,
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) {
-              if (remoteFallbackUrl == null) {
-                return _buildFallback();
-              }
-              return Image.network(
-                remoteFallbackUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _buildFallback(),
-              );
-            },
+            finalFallback: remoteFallbackUrl == null
+                ? _buildFallback()
+                : Image.network(
+                    remoteFallbackUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _buildFallback(),
+                  ),
           );
         }
 
@@ -188,14 +191,14 @@ class _ExerciseAnimationPlayerState extends State<ExerciseAnimationPlayer> {
     );
   }
 
-  String? _toWebStaticUrl(String path) {
+  List<String> _toWebStaticUrls(String path) {
     if (!path.startsWith('assets/')) {
-      return null;
+      return const [];
     }
-    // 注意：这是绝对路径，必须从站点根开始。
-    // `path` 的格式为 `assets/images/...`，部署时静态资源应从 `/assets/...` 读取。
-    // assets/images/... -> /assets/images/...
-    return '/$path';
+    // 兼容两种常见部署目录：
+    // 1) /assets/images/...（自定义复制）
+    // 2) /assets/assets/images/...（Flutter web 默认 assets 根）
+    return ['/$path', '/assets/$path'];
   }
 
   String? _toRemoteExerciseUrl(String path) {
@@ -211,6 +214,27 @@ class _ExerciseAnimationPlayerState extends State<ExerciseAnimationPlayer> {
 
   Widget _buildFallback() {
     return const Icon(Icons.image_not_supported, size: 32);
+  }
+
+  Widget _buildNetworkWithFallback({
+    required List<String> urls,
+    required BoxFit fit,
+    required Widget finalFallback,
+    int index = 0,
+  }) {
+    if (index >= urls.length) {
+      return finalFallback;
+    }
+    return Image.network(
+      urls[index],
+      fit: fit,
+      errorBuilder: (_, __, ___) => _buildNetworkWithFallback(
+        urls: urls,
+        fit: fit,
+        finalFallback: finalFallback,
+        index: index + 1,
+      ),
+    );
   }
 }
 

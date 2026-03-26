@@ -9,7 +9,12 @@ import 'exercise_data.dart' as ex;
 import 'widgets/exercise_animation_player.dart';
 
 class TrainingPage extends StatefulWidget {
-  const TrainingPage({super.key});
+  const TrainingPage({
+    super.key,
+    this.initialPendingSessionSoFar,
+  });
+
+  final List<SessionExerciseItem>? initialPendingSessionSoFar;
 
   @override
   State<TrainingPage> createState() => _TrainingPageState();
@@ -48,6 +53,7 @@ class _TrainingPageState extends State<TrainingPage> {
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
+    _pendingSessionSoFar = widget.initialPendingSessionSoFar;
     // 首次加载 JSON 动作库
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadExercises();
@@ -164,7 +170,18 @@ class _TrainingPageState extends State<TrainingPage> {
               exerciseName: firstExerciseName,
               imageAssetPath: firstExerciseImageAssetPath,
               previousExercises: allPrevious.isEmpty ? null : allPrevious,
-              onTrainingComplete: () => mainTabState.setIndex(0),
+              // 如果此前已经有会话内容，则继续当前计时/会话；否则新开一场。
+              forceNewSession: _pendingSessionSoFar == null,
+              onTrainingComplete: () {
+                if (mounted) {
+                  setState(() {
+                    // 完成训练后清空缓存，下一次进入详情页按全新会话初始化。
+                    _pendingSessionSoFar = null;
+                    _selectedExerciseIds.clear();
+                  });
+                }
+                mainTabState.refresh();
+              },
             ),
           ),
         )

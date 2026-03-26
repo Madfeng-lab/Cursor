@@ -8,11 +8,12 @@ import 'home_page.dart';
 import 'training_page.dart';
 import 'diet_page.dart';
 import 'stats_page.dart';
+import 'widgets/ai_coach_fab.dart';
 
 // 构建时可覆盖：`flutter run --dart-define=API_BASE=http://10.0.2.2:8080`
-const String _kApiBase = String.fromEnvironment(
+const String _kApiBaseFromEnv = String.fromEnvironment(
   'API_BASE',
-  defaultValue: 'http://localhost:8080',
+  defaultValue: '',
 );
 
 void main() {
@@ -29,6 +30,12 @@ class MainTabState extends ChangeNotifier {
     _index = value;
     notifyListeners();
   }
+
+  /// 无论当前 tab 是否已经是指定值，都强制触发一次重建。
+  /// 用于训练完成后刷新主页「进行中」卡片等状态。
+  void refresh() {
+    notifyListeners();
+  }
 }
 
 class FitnessApp extends StatelessWidget {
@@ -36,7 +43,10 @@ class FitnessApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final apiClient = ApiClient(baseUrl: _kApiBase);
+    final resolvedApiBase = _kApiBaseFromEnv.isNotEmpty
+        ? _kApiBaseFromEnv
+        : _resolveDefaultApiBase();
+    final apiClient = ApiClient(baseUrl: resolvedApiBase);
 
     return MultiProvider(
       providers: [
@@ -59,6 +69,20 @@ class FitnessApp extends StatelessWidget {
   }
 }
 
+String _resolveDefaultApiBase() {
+  if (!Uri.base.hasAuthority) return 'http://localhost:8080';
+
+  final host = Uri.base.host.toLowerCase();
+  final isLocalHost = host == 'localhost' || host == '127.0.0.1';
+
+  // Flutter web debug server usually runs on a random localhost port
+  // (e.g. 59244). Backend remains on 8080, so use it by default.
+  if (isLocalHost && Uri.base.port != 8080) {
+    return 'http://localhost:8080';
+  }
+  return Uri.base.origin;
+}
+
 class MainScaffold extends StatelessWidget {
   const MainScaffold({super.key});
 
@@ -66,14 +90,25 @@ class MainScaffold extends StatelessWidget {
   Widget build(BuildContext context) {
     final tabState = context.watch<MainTabState>();
     final pages = [
-      const HomePage(),
+      HomePage(),
       const TrainingPage(),
       const DietPage(),
       const StatsPage(),
       const ProfilePage(),
     ];
     return Scaffold(
-      body: pages[tabState.index],
+      body: Stack(
+        children: [
+          Positioned.fill(child: pages[tabState.index]),
+          Positioned.fill(
+            child: Consumer<AuthState>(
+              builder: (context, auth, _) {
+                return AiCoachFab(apiClient: auth.apiClient);
+              },
+            ),
+          ),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: tabState.index,
         destinations: const [

@@ -42,6 +42,9 @@ public class WorkoutSession {
 
     private double estimatedCalories;
 
+    /** 训练计时秒数（用于中途退出后继续训练时恢复） */
+    private Integer elapsedSeconds = 0;
+
     @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<WorkoutSessionExercise> exercises = new ArrayList<>();
 

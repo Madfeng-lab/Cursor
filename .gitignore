@@ -9,7 +9,9 @@ backend/*.log
 /frontend/build/
 /frontend/.flutter-plugins
 /frontend/.flutter-plugins-dependencies
-
+backend/src/main/resources/application.yml
+backend/src/main/resources/application-dev.yml
+backend/src/main/resources/application-prod.yml
 # IDE/editor
 .vscode/
 .idea/

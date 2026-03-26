@@ -94,6 +94,7 @@ class _TrainingSessionPageState extends State<TrainingSessionPage> {
         sessionId: _sessionId!,
         completed: true,
         title: _titleController.text.trim(),
+        elapsedSeconds: _elapsedSeconds,
         totalVolumeKg: volume,
         estimatedCalories: estCalories,
       );

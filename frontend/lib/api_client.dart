@@ -20,6 +20,35 @@ class ApiClient {
 
   String? _token;
 
+  Future<void> _debugLog({
+    required String runId,
+    required String hypothesisId,
+    required String location,
+    required String message,
+    required Map<String, dynamic> data,
+  }) async {
+    try {
+      await http
+          .post(
+            Uri.parse('http://127.0.0.1:7864/ingest/3f447c3b-a637-439a-bf29-7c7ba235083f'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Debug-Session-Id': '1c4714',
+            },
+            body: jsonEncode({
+              'sessionId': '1c4714',
+              'runId': runId,
+              'hypothesisId': hypothesisId,
+              'location': location,
+              'message': message,
+              'data': data,
+              'timestamp': DateTime.now().millisecondsSinceEpoch,
+            }),
+          )
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+  }
+
   Future<http.Response> _timed(Future<http.Response> request) async {
     try {
       return await request.timeout(requestTimeout);
@@ -142,6 +171,112 @@ class ApiClient {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
+  Stream<String> aiCoachChatStream({
+    required int memoryId,
+    required String message,
+  }) async* {
+    const aiCoachFirstChunkTimeout = Duration(seconds: 75);
+    final uri = Uri.parse('$baseUrl/api/aigymhelper/chat').replace(
+      queryParameters: {
+        'memoryId': '$memoryId',
+        'message': message,
+      },
+    );
+    final client = http.Client();
+    try {
+      final request = http.Request('GET', uri)
+        ..headers.addAll(_headers(withAuth: _token != null))
+        ..headers['Accept'] = 'text/event-stream';
+      request.headers.remove('Content-Type');
+      // #region agent log
+      unawaited(_debugLog(
+        runId: 'post-fix',
+        hypothesisId: 'H6',
+        location: 'api_client.dart:185',
+        message: 'ai chat request sending',
+        data: {
+          'memoryId': memoryId,
+          'messageLength': message.length,
+          'timeoutSeconds': aiCoachFirstChunkTimeout.inSeconds,
+          'baseUrl': baseUrl,
+        },
+      ));
+      // #endregion
+
+      final response = await client
+          .send(request)
+          .timeout(aiCoachFirstChunkTimeout);
+      // #region agent log
+      unawaited(_debugLog(
+        runId: 'post-fix',
+        hypothesisId: 'H7',
+        location: 'api_client.dart:199',
+        message: 'ai chat response headers received',
+        data: {
+          'statusCode': response.statusCode,
+          'contentType': response.headers['content-type'] ?? '',
+        },
+      ));
+      // #endregion
+      if (response.statusCode != 200) {
+        throw Exception('智能教练请求失败: ${response.statusCode}');
+      }
+
+      var chunkCount = 0;
+      await for (final line in response.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        if (!line.startsWith('data:')) continue;
+        final chunk = line.substring(5).trimLeft();
+        if (chunk.isEmpty) continue;
+        chunkCount++;
+        if (chunkCount <= 3) {
+          // #region agent log
+          unawaited(_debugLog(
+            runId: 'post-fix',
+            hypothesisId: 'H8',
+            location: 'api_client.dart:223',
+            message: 'ai chat chunk parsed',
+            data: {
+              'chunkCount': chunkCount,
+              'chunkLength': chunk.length,
+            },
+          ));
+          // #endregion
+        }
+        yield chunk;
+      }
+    } on TimeoutException {
+      // #region agent log
+      unawaited(_debugLog(
+        runId: 'post-fix',
+        hypothesisId: 'H9',
+        location: 'api_client.dart:238',
+        message: 'ai chat timeout',
+        data: {
+          'timeoutSeconds': aiCoachFirstChunkTimeout.inSeconds,
+        },
+      ));
+      // #endregion
+      throw Exception(
+        '智能教练响应超时（${aiCoachFirstChunkTimeout.inSeconds} 秒），请检查后端服务状态',
+      );
+    } on http.ClientException catch (e) {
+      // #region agent log
+      unawaited(_debugLog(
+        runId: 'post-fix',
+        hypothesisId: 'H10',
+        location: 'api_client.dart:250',
+        message: 'ai chat client exception',
+        data: {'error': e.message},
+      ));
+      // #endregion
+      throw Exception('智能教练连接失败：${e.message}');
+    } finally {
+      client.close();
+    }
+  }
+
   Future<Map<String, dynamic>> startWorkoutSession({
     required int userId,
     required String title,
@@ -176,6 +311,7 @@ class ApiClient {
   Future<void> saveWorkoutSessionProgress({
     required int sessionId,
     required String title,
+    required int elapsedSeconds,
     required List<Map<String, dynamic>> exercises,
   }) async {
     final uri = Uri.parse('$baseUrl/api/workouts/sessions/$sessionId/progress');
@@ -184,6 +320,7 @@ class ApiClient {
       headers: _headers(),
       body: jsonEncode({
         'title': title,
+        'elapsedSeconds': elapsedSeconds,
         'exercises': exercises,
       }),
     );
@@ -198,6 +335,7 @@ class ApiClient {
     required double totalVolumeKg,
     required double estimatedCalories,
     required String title,
+    required int elapsedSeconds,
     List<Map<String, dynamic>>? exercises,
   }) async {
     final uri = Uri.parse('$baseUrl/api/workouts/sessions/$sessionId/finish');
@@ -207,6 +345,7 @@ class ApiClient {
       body: jsonEncode({
         'completed': completed,
         'title': title,
+        'elapsedSeconds': elapsedSeconds,
         'totalVolumeKg': totalVolumeKg,
         'estimatedCalories': estimatedCalories,
         if (exercises != null) 'exercises': exercises,
@@ -396,12 +535,14 @@ class WorkoutSessionLite {
     required this.id,
     required this.title,
     required this.startedAt,
+    required this.elapsedSeconds,
     this.exercises = const [],
   });
 
   final int id;
   final String title;
   final DateTime startedAt;
+  final int elapsedSeconds;
   final List<WorkoutSessionExerciseLite> exercises;
 
   static WorkoutSessionLite fromJson(Map<String, dynamic> json) {
@@ -413,6 +554,7 @@ class WorkoutSessionLite {
       id: (json['id'] as num).toInt(),
       title: json['title'] as String? ?? '',
       startedAt: DateTime.parse(json['startedAt'] as String),
+      elapsedSeconds: (json['elapsedSeconds'] as num?)?.toInt() ?? 0,
       exercises: exercises,
     );
   }
@@ -484,7 +626,7 @@ class StatsOverview {
     final weightStats = json['weightStatsByDate'] as Map<String, dynamic>? ?? {};
     final weightByDate = <String, double>{};
     for (final e in weightStats.entries) {
-      final date = e.key as String;
+      final date = e.key;
       final stats = e.value as Map<String, dynamic>;
       final avg = stats['average'] as num?;
       weightByDate[date] = avg?.toDouble() ?? 0;

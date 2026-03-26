@@ -63,6 +63,9 @@ public class WorkoutController {
         if (request.getTitle() != null && !request.getTitle().isBlank()) {
             session.setTitle(request.getTitle());
         }
+        if (request.getElapsedSeconds() != null) {
+            session.setElapsedSeconds(request.getElapsedSeconds());
+        }
         session.setTotalVolumeKg(request.getTotalVolumeKg());
         session.setEstimatedCalories(request.getEstimatedCalories());
         if (request.getExercises() != null && !request.getExercises().isEmpty()) {
@@ -123,6 +126,9 @@ public class WorkoutController {
         if (request.getTitle() != null && !request.getTitle().isBlank()) {
             session.setTitle(request.getTitle());
         }
+        if (request.getElapsedSeconds() != null) {
+            session.setElapsedSeconds(request.getElapsedSeconds());
+        }
 
         if (request.getExercises() != null && !request.getExercises().isEmpty()) {
             // overwrite session exercises (cascade + orphanRemoval)
@@ -175,6 +181,7 @@ public class WorkoutController {
     public static class FinishSessionRequest {
         private boolean completed;
         private String title;
+        private Integer elapsedSeconds;
         private double totalVolumeKg;
         private double estimatedCalories;
         private List<ExerciseDetail> exercises;
@@ -184,6 +191,7 @@ public class WorkoutController {
     @Setter
     public static class ProgressSessionRequest {
         private String title;
+        private Integer elapsedSeconds;
         private List<ExerciseDetail> exercises;
     }
 

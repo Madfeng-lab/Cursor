@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import 'api_client.dart';
 import 'auth_state.dart';
 import 'main.dart';
-import 'training_session_page.dart';
 import 'training_detail_page.dart';
 import 'training_page.dart';
 
@@ -310,123 +309,157 @@ class _TodayWorkoutFocusCard extends StatelessWidget {
       height: 160,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: () async {
-              try {
-                final unfinished = await apiClient.fetchUnfinishedWorkoutSession(
-                  userId: userId,
-                );
-                if (unfinished != null) {
-                  // 有未完成训练：直接进入训练详情页并继续计时。
-                  if (!context.mounted) return;
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => TrainingDetailPage(
-                        apiClient: apiClient,
-                        userId: userId,
-                        exerciseName: unfinished.title,
-                        imageAssetPath: null,
-                        previousExercises: null,
-                        onTrainingComplete: () => mainTabState.setIndex(0),
+        child: FutureBuilder<WorkoutSessionLite?>(
+          future: apiClient.fetchUnfinishedWorkoutSession(userId: userId),
+          builder: (context, snapshot) {
+            final unfinished = snapshot.data;
+            final isEffectivelyUnfinished = unfinished != null &&
+                unfinished.exercises.isNotEmpty &&
+                unfinished.exercises.any((ex) =>
+                    ex.sets.isEmpty ||
+                    ex.sets.any((s) => !s.completed));
+            final hasUnfinished = isEffectivelyUnfinished;
+            final loading = snapshot.connectionState != ConnectionState.done;
+
+            final tagColor = hasUnfinished ? const Color(0xFF25F46A) : Colors.grey;
+            final tagText = hasUnfinished ? '进行中' : '未开始';
+            final unfinishedTitle = unfinished?.title;
+            final titleText = (unfinishedTitle != null && unfinishedTitle.isNotEmpty)
+                ? unfinishedTitle
+                : '开始一次训练吧';
+            final subtitleText = (!hasUnfinished || unfinished == null)
+                ? '点击进入动作库选择训练动作'
+                : '${unfinished.exercises.length} 个动作 | 已用 ${unfinished.elapsedSeconds ~/ 60} 分钟';
+
+            return Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: loading
+                    ? null
+                    : () async {
+                        try {
+                          // 点击时重新拉取最新的未完成会话，避免 FutureBuilder 的快照陈旧导致跳错页面。
+                          final currentUnfinished = await apiClient.fetchUnfinishedWorkoutSession(
+                            userId: userId,
+                          );
+                          final currentEffectivelyUnfinished = currentUnfinished != null &&
+                              currentUnfinished.exercises.isNotEmpty &&
+                              currentUnfinished.exercises.any((ex) =>
+                                  ex.sets.isEmpty ||
+                                  ex.sets.any((s) => !s.completed));
+
+                          if (currentEffectivelyUnfinished) {
+                            if (!context.mounted) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => TrainingDetailPage(
+                                  apiClient: apiClient,
+                                  userId: userId,
+                                  exerciseName: currentUnfinished!.title,
+                                  imageAssetPath: null,
+                                  previousExercises: null,
+                                  onTrainingComplete: () => mainTabState.refresh(),
+                                ),
+                              ),
+                            );
+                          } else {
+                            if (!context.mounted) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const TrainingPage(),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('跳转失败: $e')),
+                          );
+                        }
+                      },
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Container(color: Colors.grey.shade300),
+                    Container(
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.bottomCenter,
+                          end: Alignment.topCenter,
+                          colors: [
+                            Colors.black87,
+                            Colors.black45,
+                            Colors.transparent,
+                          ],
+                        ),
                       ),
                     ),
-                  );
-                } else {
-                  // 没有未完成训练：进入动作库。
-                  if (!context.mounted) return;
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const TrainingPage(),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('跳转失败: $e')),
-                );
-              }
-            },
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Container(color: Colors.grey.shade300),
-                Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [
-                        Colors.black87,
-                        Colors.black45,
-                        Colors.transparent,
-                      ],
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(999),
-                              color: const Color(0xFF25F46A),
+                          if (hasUnfinished)
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(999),
+                                    color: tagColor,
+                                  ),
+                                  child: Text(
+                                    tagText,
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            child: const Text(
-                              '进行中',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          if (hasUnfinished) const SizedBox(height: 8),
+                          Text(
+                            titleText,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            subtitleText,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        '胸部与三头肌强化',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        '12 个动作 | 预计 60 分钟',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Positioned(
-                  right: 16,
-                  bottom: 16,
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(999),
                     ),
-                    child: const Icon(Icons.play_arrow, color: Colors.white),
-                  ),
+                    Positioned(
+                      right: 16,
+                      bottom: 16,
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Icon(Icons.play_arrow, color: Colors.white),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
       ),
     );

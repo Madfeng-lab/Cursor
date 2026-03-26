@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'api_client.dart';
 import 'widgets/exercise_animation_player.dart';
+import 'training_page.dart';
 
 /// 本场训练中已完成的动作条目（用于追加展示）
 class SessionExerciseItem {
@@ -28,6 +29,7 @@ class TrainingDetailPage extends StatefulWidget {
     this.imageAssetPath,
     this.previousExercises,
     this.onTrainingComplete,
+    this.forceNewSession = false,
   });
 
   final ApiClient apiClient;
@@ -42,6 +44,8 @@ class TrainingDetailPage extends StatefulWidget {
   final List<SessionExerciseItem>? previousExercises;
   /// 完成训练并保存成功后调用（由调用方切回首页等）
   final VoidCallback? onTrainingComplete;
+  /// 为 true 时忽略未完成会话，直接新开一场训练（如从动作库重新选择动作进入）。
+  final bool forceNewSession;
 
   @override
   State<TrainingDetailPage> createState() => _TrainingDetailPageState();
@@ -52,13 +56,13 @@ const Color _primary = Color(0xFF25F46A);
 
 class _TrainingDetailPageState extends State<TrainingDetailPage> {
   int? _sessionId;
-  DateTime? _sessionStartedAt;
   late final TextEditingController _titleController;
   bool _starting = false;
   bool _finishing = false;
   String? _error;
 
   int _elapsedSeconds = 0;
+  bool _timerPaused = false;
   Timer? _timer;
 
   // 组数据
@@ -135,18 +139,24 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
     super.dispose();
   }
 
+  Future<void> _exitTraining() async {
+    if (_finishing) return;
+    _timerPaused = true;
+    try {
+      await _saveProgressIfNeeded();
+    } catch (_) {
+      // 保存失败也允许退出，避免阻塞用户操作。
+    }
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
+  }
+
   void _startTimer() {
     _timer?.cancel();
-    if (_sessionStartedAt == null) return;
-
-    // 用 startedAt 计算，确保退出后再次进入能从后端继续计时。
-    _elapsedSeconds = DateTime.now().difference(_sessionStartedAt!).inSeconds;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      final startedAt = _sessionStartedAt;
-      if (startedAt == null) return;
-      final diffSeconds = DateTime.now().difference(startedAt).inSeconds;
-      setState(() => _elapsedSeconds = diffSeconds);
+      if (_timerPaused) return;
+      setState(() => _elapsedSeconds++);
     });
   }
 
@@ -156,11 +166,17 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
       _error = null;
     });
     try {
-      final unfinished =
-          await widget.apiClient.fetchUnfinishedWorkoutSession(userId: widget.userId);
+      final unfinished = widget.forceNewSession
+          ? null
+          : await widget.apiClient.fetchUnfinishedWorkoutSession(
+              userId: widget.userId,
+            );
       if (unfinished != null) {
         _sessionId = unfinished.id;
-        _sessionStartedAt = unfinished.startedAt;
+        _elapsedSeconds = unfinished.elapsedSeconds > 0
+            ? unfinished.elapsedSeconds
+            : DateTime.now().difference(unfinished.startedAt).inSeconds;
+        _timerPaused = false;
 
         // 恢复会话标题（优先使用会话本身，确保退出/恢复一致）
         _titleController.text =
@@ -225,10 +241,8 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
               : '今日训练',
         );
         _sessionId = res['id'] as int?;
-        final startedAtRaw = res['startedAt'] as String?;
-        _sessionStartedAt = startedAtRaw != null
-            ? DateTime.parse(startedAtRaw)
-            : DateTime.now();
+        _elapsedSeconds = 0;
+        _timerPaused = false;
         _initializeCollapsedStates();
         _startTimer();
       }
@@ -272,6 +286,7 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
     await widget.apiClient.saveWorkoutSessionProgress(
       sessionId: _sessionId!,
       title: _titleController.text.trim(),
+      elapsedSeconds: _elapsedSeconds,
       exercises: exercises,
     );
   }
@@ -321,6 +336,7 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
         sessionId: _sessionId!,
         completed: true,
         title: _titleController.text.trim(),
+        elapsedSeconds: _elapsedSeconds,
         totalVolumeKg: totalVolume,
         estimatedCalories: estCalories,
         exercises: List.generate(allItems.length, (i) {
@@ -365,6 +381,7 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
         // 点击返回/关闭时：如果不是“完成训练”流程，则保存当前组数据并保持会话未完成。
         if (_finishing) return true;
         try {
+          _timerPaused = true;
           await _saveProgressIfNeeded();
         } catch (_) {
           // 保存失败也允许退出，避免阻塞用户操作。
@@ -379,9 +396,9 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _buildWorkoutTitleInput(),
-                const SizedBox(height: 12),
                 _buildHeader(context),
+                const SizedBox(height: 12),
+                _buildWorkoutTitleInput(),
                 const SizedBox(height: 16),
                 Expanded(
                   child: SingleChildScrollView(
@@ -416,7 +433,7 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
                   child: TextButton.icon(
                     onPressed: (_starting || _finishing)
                         ? null
-                        : () {
+                        : () async {
                             final name = widget.exerciseName ?? '杠铃卧推';
                             final currentCopy = _sets
                                 .map((s) => WorkoutSet(
@@ -433,7 +450,20 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
                                 difficulty: _currentDifficulty,
                               ),
                             ];
-                            Navigator.of(context).pop(sessionSoFar);
+                            _timerPaused = true;
+                            try {
+                              await _saveProgressIfNeeded();
+                            } catch (_) {
+                              // 保存失败也允许切换到动作库继续编辑。
+                            }
+                            if (!mounted) return;
+                            Navigator.of(context).pushReplacement(
+                              MaterialPageRoute(
+                                builder: (_) => TrainingPage(
+                                  initialPendingSessionSoFar: sessionSoFar,
+                                ),
+                              ),
+                            );
                           },
                     icon: Icon(
                       Icons.add_circle_outline,
@@ -505,7 +535,10 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
       children: [
         _circleIconButton(
           icon: Icons.close,
-          onTap: () => Navigator.of(context).maybePop(),
+          onTap: () {
+            // 叉号直接 pop，不会触发 WillPopScope 的 onWillPop，所以这里要显式暂停并保存。
+            _exitTraining();
+          },
         ),
         Column(
           mainAxisSize: MainAxisSize.min,
@@ -527,9 +560,13 @@ class _TrainingDetailPageState extends State<TrainingDetailPage> {
           ],
         ),
         _circleIconButton(
-          icon: Icons.history,
+          icon: _timerPaused ? Icons.play_arrow : Icons.pause,
           iconColor: _primary,
-          onTap: () {},
+          onTap: () {
+            setState(() {
+              _timerPaused = !_timerPaused;
+            });
+          },
         ),
       ],
     );
